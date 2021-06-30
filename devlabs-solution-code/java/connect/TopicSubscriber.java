@@ -19,15 +19,10 @@
 
 import java.util.concurrent.CountDownLatch;
 
-import com.solacesystems.jcsmp.BytesXMLMessage;
 import com.solacesystems.jcsmp.JCSMPException;
 import com.solacesystems.jcsmp.JCSMPFactory;
 import com.solacesystems.jcsmp.JCSMPProperties;
 import com.solacesystems.jcsmp.JCSMPSession;
-import com.solacesystems.jcsmp.TextMessage;
-import com.solacesystems.jcsmp.Topic;
-import com.solacesystems.jcsmp.XMLMessageConsumer;
-import com.solacesystems.jcsmp.XMLMessageListener;
 
 public class TopicSubscriber {
 
@@ -63,9 +58,7 @@ public class TopicSubscriber {
         session.connect();
 
         System.out.println("Successfully Connected!");
-        cons.start();
-
-        cons.close();
+     
         System.out.println("Exiting.");
         session.closeSession();
     }
