@@ -17,27 +17,26 @@
  * under the License.
  */
 
-import java.text.DateFormat;
-import java.util.Date;
+import java.util.concurrent.CountDownLatch;
 
-import com.solacesystems.jcsmp.DeliveryMode;
+import com.solacesystems.jcsmp.BytesXMLMessage;
+import com.solacesystems.jcsmp.ConsumerFlowProperties;
 import com.solacesystems.jcsmp.EndpointProperties;
+import com.solacesystems.jcsmp.FlowReceiver;
 import com.solacesystems.jcsmp.JCSMPException;
 import com.solacesystems.jcsmp.JCSMPFactory;
 import com.solacesystems.jcsmp.JCSMPProperties;
 import com.solacesystems.jcsmp.JCSMPSession;
-import com.solacesystems.jcsmp.JCSMPStreamingPublishEventHandler;
 import com.solacesystems.jcsmp.Queue;
 import com.solacesystems.jcsmp.TextMessage;
-import com.solacesystems.jcsmp.XMLMessageProducer;
+import com.solacesystems.jcsmp.XMLMessageListener;
 
-public class QueueProducer {
+public class QueueConsumer {
 
     public static void main(String... args) throws JCSMPException, InterruptedException {
-
         // Check command line arguments
         if (args.length < 2 || args[1].split("@").length != 2) {
-            System.out.println("Usage: QueueProducer <host:port> <client-username@message-vpn> [client-password]");
+            System.out.println("Usage: QueueConsumer <host:port> <client-username@message-vpn> [client-password]");
             System.out.println();
             System.exit(-1);
         }
@@ -52,7 +51,7 @@ public class QueueProducer {
             System.exit(-1);
         }
 
-        System.out.println("QueueProducer initializing...");
+        System.out.println("QueueConsumer initializing...");
         // Create a JCSMP Session
         final JCSMPProperties properties = new JCSMPProperties();
         properties.setProperty(JCSMPProperties.HOST, args[0]);     // host:port
@@ -62,10 +61,9 @@ public class QueueProducer {
             properties.setProperty(JCSMPProperties.PASSWORD, args[2]); // client-password
         }
         final JCSMPSession session = JCSMPFactory.onlyInstance().createSession(properties);
-
         session.connect();
 
-        String queueName = "Q/tutorial";
+        final String queueName = "Q/tutorial";
         System.out.printf("Attempting to provision the queue '%s' on the appliance.%n", queueName);
         final EndpointProperties endpointProps = new EndpointProperties();
         // set queue permissions to "consume" and access-type to "exclusive"
@@ -76,34 +74,54 @@ public class QueueProducer {
         // Actually provision it, and do not fail if it already exists
         session.provision(queue, endpointProps, JCSMPSession.FLAG_IGNORE_ALREADY_EXISTS);
 
-        /** Anonymous inner-class for handling publishing events */
-        final XMLMessageProducer prod = session.getMessageProducer(
-                new JCSMPStreamingPublishEventHandler() {
-                    @Override
-                    public void responseReceived(String messageID) {
-                        System.out.printf("Producer received response for msg ID #%s%n",messageID);
-                    }
-                    @Override
-                    public void handleError(String messageID, JCSMPException e, long timestamp) {
-                        System.out.printf("Producer received error for msg ID %s @ %s - %s%n",
-                                messageID,timestamp,e);
-                    }
-                });
+        final CountDownLatch latch = new CountDownLatch(1); // used for synchronizing b/w threads
 
-        // Publish-only session is now hooked up and running!
-        System.out.printf("Connected. About to send message to queue '%s'...%n",queue.getName());
+        System.out.printf("Attempting to bind to the queue '%s' on the appliance.%n", queueName);
 
-        TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
-        msg.setDeliveryMode(DeliveryMode.PERSISTENT);
-        String text = "Persistent Queue Tutorial! "+DateFormat.getDateTimeInstance().format(new Date());
-        msg.setText(text);
+        // Create a Flow be able to bind to and consume messages from the Queue.
+        final ConsumerFlowProperties flow_prop = new ConsumerFlowProperties();
+        flow_prop.setEndpoint(queue);
+        flow_prop.setAckMode(JCSMPProperties.SUPPORTED_MESSAGE_ACK_CLIENT);
 
-        // Send message directly to the queue
-        prod.send(msg, queue);
-	// Delivery not yet confirmed. See ConfirmedPublish.java
-        System.out.println("Message sent. Exiting.");
+        EndpointProperties endpoint_props = new EndpointProperties();
+        endpoint_props.setAccessType(EndpointProperties.ACCESSTYPE_EXCLUSIVE);
 
-        // Close session
+        final FlowReceiver cons = session.createFlow(new XMLMessageListener() {
+            @Override
+            public void onReceive(BytesXMLMessage msg) {
+                if (msg instanceof TextMessage) {
+                    System.out.printf("TextMessage received: '%s'%n", ((TextMessage) msg).getText());
+                } else {
+                    System.out.println("Message received.");
+                }
+                System.out.printf("Message Dump:%n%s%n", msg.dump());
+
+                // When the ack mode is set to SUPPORTED_MESSAGE_ACK_CLIENT,
+                // guaranteed delivery messages are acknowledged after
+                // processing
+                msg.ackMessage();
+                latch.countDown(); // unblock main thread
+            }
+
+            @Override
+            public void onException(JCSMPException e) {
+                System.out.printf("Consumer received exception: %s%n", e);
+                latch.countDown(); // unblock main thread
+            }
+        }, flow_prop, endpoint_props);
+
+        // Start the consumer
+        System.out.println("Connected. Awaiting message ...");
+        cons.start();
+
+        try {
+            latch.await(); // block here until message received, and latch will flip
+        } catch (InterruptedException e) {
+            System.out.println("I was awoken while waiting");
+        }
+        // Close consumer
+        cons.close();
+        System.out.println("Exiting.");
         session.closeSession();
     }
 }
